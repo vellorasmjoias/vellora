@@ -143,3 +143,6 @@ a.hb{text-decoration:none}
 .starpick{display:flex;gap:4px;margin:16px 0 0}
 .starpick button{background:none;border:0;font-size:34px;color:var(--line);cursor:pointer;padding:0 2px;transition:.2s}
 .starpick button.on{color:var(--gold)}
+
+.scrl{position:absolute!important;bottom:28px;left:50%;width:1px;height:56px;background:linear-gradient(var(--gold2),transparent);pointer-events:none;animation:sl 2.2s ease-in-out infinite}
+@keyframes sl{0%{transform:scaleY(0);transform-origin:top}50%{transform:scaleY(1);transform-origin:top}51%{transform:scaleY(1);transform-origin:bottom}100%{transform:scaleY(0);transform-origin:bottom}}

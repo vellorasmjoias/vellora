@@ -279,8 +279,7 @@ function render(){
   <div class="hr">${db?`${isAdm?'<a class="hb" id="adm" href="admin.html">Painel</a>':''}<button class="hb" id="acc">${user?'Minha conta':'Entrar'}</button>
   <button class="hb" id="bag" aria-label="Sacola"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 8h14l-1 12H6L5 8z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/></svg><i id="bn" class="${count()?'on':''}">${count()||''}</i></button>`:''}</div></header>
   <section class="hero"><i class="blob b1"></i><i class="blob b2"></i><i class="blob b3"></i>
-  <div class="tag">Nova coleção</div><h1>${esc(S.store_name)}<em>Semijoias</em></h1><p>${esc(S.tagline)}</p>
-  <div class="cta"><a class="btn" href="#colecao">Ver coleção</a></div></section>
+  <div class="tag">Nova coleção</div><h1>${esc(S.store_name)}<em>Semijoias</em></h1><p>${esc(S.tagline)}</p><i class="scrl" aria-hidden="true"></i></section>
   <div class="mq"><div>${mq}${mq}</div></div>
   ${tiles}
   <section class="sec" id="colecao"><div class="tag">Catálogo</div><h2 class="rv">Peças que <em>brilham</em> com você</h2>
