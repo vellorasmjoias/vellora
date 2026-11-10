@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vellora Semijoias</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=Jost:wght@300;400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app"></div>
+<div class="ov" id="ovP"><div class="modal" id="modal"></div></div>
+<div class="ov" id="ovU"><div class="panel2" id="auth"></div></div>
+<div class="ov side" id="ovC"><aside class="drawer" id="cart"></aside></div>
+<div id="toast"></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
+<script src="config.js"></script>
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const brl=n=>Number(n||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+let CV={},P=[],S={store_name:'Vellora',tagline:'',whatsapp:''},filter='Todas',err='',user=null,cart={},isAdm=false;
+const LS='vellora_cart';
+let RV=[],rvAll=false;
+let ship={method:'entrega',cep:(()=>{try{return localStorage.getItem('vellora_cep')||''}catch(e){return''}})(),ok:false,msg:''},info=(()=>{try{return JSON.parse(localStorage.getItem('vellora_info'))||{}}catch(e){return{}}})();
+const fmtCep=c=>c.length===8?c.slice(0,5)+'-'+c.slice(5):c;
+const ST={aguardando:'Aguardando pagamento',pago:'Pago',enviado:'Enviado',cancelado:'Cancelado'};
+const gl=()=>{try{return JSON.parse(localStorage.getItem(LS))||{}}catch(e){return{}}};
+const sl=()=>{try{localStorage.setItem(LS,JSON.stringify(cart))}catch(e){}};
+const count=()=>Object.values(cart).reduce((a,b)=>a+b,0);
+const configured=CFG.url&&!CFG.url.startsWith('COLE');
+const db=configured?supabase.createClient(CFG.url,CFG.key):null;
+
+async function load(){
+  if(!db){err='Configure o arquivo config.js.';return}
+  const [p,s,c,rv]=await Promise.all([db.from('products').select('*').order('created_at',{ascending:false}),db.from('settings').select('*').eq('id',1).maybeSingle(),db.from('categories').select('*'),db.from('reviews').select('*').order('created_at',{ascending:false}).limit(100)]);
+  if(p.error){err='Não foi possível carregar o catálogo.';return}
+  P=p.data||[];if(s.data)S=s.data;CV={};(c.data||[]).forEach(x=>CV[x.name]=x.video_url);RV=rv?.data||[];
+}
+
+/* ---------- sacola ---------- */
+async function loadCart(){
+  if(!user){cart=gl();return}
+  const r=await db.from('cart_items').select('product_id,qty');
+  cart={};(r.data||[]).forEach(x=>cart[x.product_id]=x.qty);
+  const l=gl(),ids=Object.keys(l).filter(id=>P.some(p=>p.id===id));
+  if(ids.length){ids.forEach(id=>cart[id]=Math.min(20,(cart[id]||0)+l[id]));
+    await db.from('cart_items').upsert(ids.map(id=>({user_id:user.id,product_id:id,qty:cart[id]})));}
+  if(Object.keys(l).length)try{localStorage.removeItem(LS)}catch(e){}
+}
+async function setQty(id,q){
+  if(q<=0)delete cart[id];else cart[id]=Math.min(q,20);
+  paintBadge();drawCart();quote();
+  if(user){if(cart[id])await db.from('cart_items').upsert({user_id:user.id,product_id:id,qty:cart[id]});
+    else await db.from('cart_items').delete().eq('product_id',id).eq('user_id',user.id)}
+  else sl();
+}
+function addCart(id){setQty(id,(cart[id]||0)+1);toast('Adicionado à sacola ✓')}
+const sub=()=>Object.keys(cart).reduce((a,id)=>{const p=P.find(x=>x.id===id);return a+(p?p.price*cart[id]:0)},0);
+async function quote(){
+  if(!db||ship.method!=='entrega'||!/^\d{8}$/.test(ship.cep||'')||!sub())return;
+  const r=await db.rpc('quote_shipping',{p_cep:ship.cep,p_subtotal:sub()}),d=r.data;
+  ship.ok=false;ship.msg='';
+  if(r.error||!d)ship.msg='Não foi possível calcular agora.';
+  else if(d.error==='cep')ship.msg='CEP não encontrado. Confira os números.';
+  else if(d.error==='region')ship.msg='Ainda não entregamos nessa região. Fale com a loja pelo WhatsApp.';
+  else Object.assign(ship,{ok:true,uf:d.uf,price:Number(d.price),days:d.days,free:d.free});
+  drawCart();
+}
+function drawCart(){
+  const it=Object.keys(cart).map(id=>({p:P.find(x=>x.id===id),q:cart[id]})).filter(x=>x.p);
+  const tot=sub(),num=(S.whatsapp||'').replace(/\D/g,''),pixOk=!!(db&&S.pix_key),pick=!!(S.pickup_text||'').trim(),fs=Number(S.free_ship_from)||0;
+  if(!pick)ship.method='entrega';
+  const fr=ship.method==='retirada'?0:(ship.ok?ship.price:null);
+  const msg=encodeURIComponent(`Olá! Quero finalizar meu pedido na ${S.store_name} Semijoias:\n\n`+it.map(x=>`• ${x.q}x ${x.p.name} — ${brl(x.p.price*x.q)}`).join('\n')+`\n\nSubtotal: ${brl(tot)}`);
+  $('#cart').innerHTML=`<div class="dh"><h2>Sua sacola</h2><button class="x2" id="cx">×</button></div>
+  <div class="dl">${it.length?it.map(({p,q})=>`<div class="ci"><div class="t">${p.image_url?`<img src="${esc(p.image_url)}" alt="">`:''}</div>
+    <div class="n">${esc(p.name)}<b>${brl(p.price)}</b><div><span class="qt"><button data-id="${p.id}" data-q="-1">−</button><span>${q}</span><button data-id="${p.id}" data-q="1">+</button></span><button class="rm" data-rm="${p.id}">Remover</button></div></div></div>`).join(''):'<p class="hint" style="padding:40px 0;text-align:center;font-size:15px">Sua sacola está vazia ✦</p>'}</div>
+  ${it.length?`<div class="df">
+    ${pick?`<div class="seg"><button data-sm="entrega" class="${ship.method==='entrega'?'on':''}">Entrega</button><button data-sm="retirada" class="${ship.method==='retirada'?'on':''}">Retirada</button></div>`:''}
+    ${ship.method==='retirada'?`<p class="hint" style="margin:0">${esc(S.pickup_text)}</p>`:`<div class="cepbox"><input id="cep" inputmode="numeric" maxlength="9" placeholder="Digite seu CEP" value="${fmtCep(ship.cep||'')}"><button class="btn sm" id="cepb">Calcular</button></div>
+      <p class="hint" style="margin:0">${ship.msg?esc(ship.msg):ship.ok?`Entrega para ${esc(ship.uf)}${ship.days?' · '+esc(ship.days):''}`:fs>0?`Frete grátis acima de ${brl(fs)}`:'Calcule o frete com o seu CEP.'}</p>`}
+    <div class="tt sm"><span>Subtotal</span><span>${brl(tot)}</span></div>
+    <div class="tt sm"><span>Frete</span><span>${fr==null?'—':fr===0?'Grátis':brl(fr)}</span></div>
+    <div class="tt"><span>Total</span><b>${brl(tot+(fr||0))}</b></div>
+    ${pixOk?`<button class="btn" id="pay" ${fr==null?'disabled':''}>Pagar com Pix</button>`:num?`<a class="btn" style="text-align:center" target="_blank" rel="noopener" href="https://wa.me/${num}?text=${msg}">Finalizar pelo WhatsApp</a>`:'<p class="hint" style="margin:0">A loja ainda não configurou o WhatsApp.</p>'}
+    ${user?'':'<p class="hint" style="margin:0">Quer guardar sua sacola? <a id="cl">Crie sua conta</a> em segundos.</p>'}</div>`:''}`;
+  $('#cx').onclick=closeAll;
+  document.querySelectorAll('#cart [data-q]').forEach(b=>b.onclick=()=>setQty(b.dataset.id,(cart[b.dataset.id]||0)+Number(b.dataset.q)));
+  document.querySelectorAll('#cart [data-rm]').forEach(b=>b.onclick=()=>setQty(b.dataset.rm,0));
+  document.querySelectorAll('#cart [data-sm]').forEach(b=>b.onclick=()=>{ship.method=b.dataset.sm;drawCart();if(ship.method==='entrega')quote()});
+  const cl=$('#cl');if(cl)cl.onclick=()=>{closeAll();openAuth('criar')};
+  const py=$('#pay');if(py)py.onclick=checkout;
+  const cb=$('#cepb'),ci=$('#cep');
+  if(cb){const go=()=>{const v=ci.value.replace(/\D/g,'');ship.ok=false;
+    if(v.length!==8){ship.msg='Digite os 8 números do CEP.';drawCart();return}
+    ship.cep=v;try{localStorage.setItem('vellora_cep',v)}catch(e){}ship.msg='Calculando…';drawCart();quote()};
+    cb.onclick=go;ci.onkeydown=e=>{if(e.key==='Enter')go()}}
+}
+function paintBadge(){const n=$('#bn');if(n){n.textContent=count()||'';n.classList.toggle('on',count()>0)}}
+function paintHdr(){const a=$('#acc');if(a)a.textContent=user?'Minha conta':'Entrar';
+  let l=$('#adm');if(isAdm&&!l&&a){l=document.createElement('a');l.id='adm';l.className='hb';l.href='admin.html';l.textContent='Painel';a.before(l)}else if(!isAdm&&l)l.remove()}
+async function checkAdmin(){isAdm=false;if(!user)return;try{const r=await db.rpc('is_admin');isAdm=r.data===true}catch(e){}}
+function openCart(){drawCart();$('#ovC').classList.add('show')}
+function closeAll(){document.querySelectorAll('.ov').forEach(o=>o.classList.remove('show'))}
+function toast(t){const e=$('#toast');e.textContent=t;e.classList.add('on');clearTimeout(toast.t);toast.t=setTimeout(()=>e.classList.remove('on'),2200)}
+
+/* ---------- Pix ---------- */
+function crc16(s){let c=0xFFFF;for(let i=0;i<s.length;i++){c^=s.charCodeAt(i)<<8;for(let j=0;j<8;j++)c=(c&0x8000)?((c<<1)^0x1021):(c<<1);c&=0xFFFF}return c.toString(16).toUpperCase().padStart(4,'0')}
+const tlv=(id,v)=>id+String(v.length).padStart(2,'0')+v;
+function pixPayload(key,name,city,amount,txid){
+  const cl=(t,n)=>String(t||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^A-Za-z0-9 ]/g,'').toUpperCase().slice(0,n)||'LOJA';
+  const p=tlv('00','01')+tlv('01','11')+tlv('26',tlv('00','BR.GOV.BCB.PIX')+tlv('01',key))+tlv('52','0000')+tlv('53','986')+tlv('54',amount.toFixed(2))+tlv('58','BR')+tlv('59',cl(name,25))+tlv('60',cl(city,15))+tlv('62',tlv('05',txid))+'6304';
+  return p+crc16(p);
+}
+function checkout(){
+  if(!user){closeAll();openAuth('criar');toast('Entre ou crie sua conta para pagar');return}
+  if(ship.method==='entrega'&&!ship.ok){toast('Calcule o frete com o seu CEP');return}
+  drawForm();
+}
+function drawForm(){
+  const e=ship.method==='entrega',i=info;
+  $('#cart').innerHTML=`<div class="dh"><h2>${e?'Dados para entrega':'Seus dados'}</h2><button class="x2" id="cx">×</button></div>
+  <div class="dl" style="padding-top:4px"><label>Nome completo</label><input id="fn" value="${esc(i.name)}" autocomplete="name">
+  <label>WhatsApp (com DDD)</label><input id="fp" inputmode="tel" value="${esc(i.phone)}" autocomplete="tel">
+  ${e?`<div class="row2"><div><label>CEP</label><input value="${fmtCep(ship.cep)}" disabled></div><div><label>Número</label><input id="fnum" value="${esc(i.num)}"></div></div>
+  <label>Rua</label><input id="fr" value="${esc(i.street)}"><label>Complemento (opcional)</label><input id="fco" value="${esc(i.comp)}">
+  <div class="row2"><div><label>Bairro</label><input id="fb" value="${esc(i.bairro)}"></div><div><label>Cidade - UF</label><input id="fci" value="${esc(i.city)}"></div></div>`:''}
+  <div class="msg bad" id="fm"></div></div>
+  <div class="df"><button class="btn" id="fgo">Gerar Pix</button><a class="hint" id="fback" style="text-align:center;cursor:pointer">Voltar à sacola</a></div>`;
+  $('#cx').onclick=closeAll;$('#fback').onclick=drawCart;
+  if(e&&ship.cep&&!i.street)fetch(`https://viacep.com.br/ws/${ship.cep}/json/`).then(r=>r.json()).then(d=>{if(d.erro)return;
+    if($('#fr')&&!$('#fr').value)$('#fr').value=d.logradouro||'';if($('#fb')&&!$('#fb').value)$('#fb').value=d.bairro||'';
+    if($('#fci')&&!$('#fci').value)$('#fci').value=(d.localidade||'')+' - '+(d.uf||'')}).catch(()=>{});
+  $('#fgo').onclick=async()=>{
+    const g=id=>($(id)?.value||'').trim(),m=$('#fm');
+    const d={name:g('#fn'),phone:g('#fp'),street:g('#fr'),num:g('#fnum'),comp:g('#fco'),bairro:g('#fb'),city:g('#fci'),cep:ship.cep};
+    if(d.name.length<3){m.textContent='Informe seu nome completo.';return}
+    if(d.phone.replace(/\D/g,'').length<10){m.textContent='Informe seu WhatsApp com DDD.';return}
+    if(e&&(!d.street||!d.num||!d.bairro||!d.city)){m.textContent='Preencha o endereço completo.';return}
+    info=d;try{localStorage.setItem('vellora_info',JSON.stringify(d))}catch(x){}
+    m.textContent='';const b=$('#fgo');b.disabled=true;b.textContent='Gerando Pix…';
+    const r=await db.rpc('create_order',{p_method:ship.method,p_cep:ship.cep||'',p_info:d});
+    if(r.error){b.disabled=false;b.textContent='Gerar Pix';const t=r.error.message||'';
+      m.textContent=/vazia/.test(t)?'Sua sacola está vazia.':/cep/.test(t)?'CEP inválido.':/regiao/.test(t)?'Não entregamos nessa região ainda.':'Não foi possível criar o pedido. Tente de novo.';return}
+    cart={};paintBadge();drawOrder(r.data);
+  };
+}
+function drawOrder(o){
+  const num=(S.whatsapp||'').replace(/\D/g,''),open=o.status==='aguardando';
+  const code=pixPayload(S.pix_key||'',S.pix_name||S.store_name,S.pix_city||'Brasil',Number(o.total),'VEL'+o.number);
+  let qr='';try{if(typeof qrcode==='function'){const q=qrcode(0,'M');q.addData(code);q.make();qr=q.createDataURL(5,2)}}catch(e){}
+  const msg=encodeURIComponent(`Olá! Fiz o pedido #${o.number} (${brl(o.total)}) na ${S.store_name} Semijoias e já paguei o Pix. Segue o comprovante.`);
+  $('#cart').innerHTML=`<div class="dh"><h2>Pedido #${o.number}</h2><button class="x2" id="cx">×</button></div>
+  <div class="dl" style="padding-top:16px"><p style="margin:0 0 6px"><span class="st">${ST[o.status]}</span></p>
+  <div class="hint">${o.ship_method==='retirada'?'Retirada':'Frete: '+(Number(o.ship_price)?brl(o.ship_price):'grátis')}</div><div class="tt" style="margin:8px 0 14px"><span>Total</span><b>${brl(o.total)}</b></div>
+  ${open?`${qr?`<img class="qr" src="${qr}" alt="QR Code Pix">`:''}
+  <label>Pix copia e cola</label><textarea class="pcode" id="pcode" readonly>${esc(code)}</textarea>
+  <p><button class="btn" id="cp" style="width:100%">Copiar código Pix</button></p>
+  <ol class="steps"><li>Abra o app do seu banco e escolha <b>Pix</b>.</li><li>Leia o QR Code ou cole o código copiado.</li><li>Pague o valor exato e envie o comprovante pelo WhatsApp.</li><li>Confirmamos o pagamento e preparamos o seu envio.</li></ol>`
+  :`<p class="hint" style="font-size:14px">${o.status==='pago'?'Pagamento confirmado! Estamos preparando o seu pedido.':o.status==='enviado'?(o.ship_method==='retirada'?'Pedido entregue. Obrigada pela compra! ✦':'Seu pedido foi enviado. Obrigada pela compra! ✦'+(o.tracking?' Código de rastreio: <b>'+esc(o.tracking)+'</b>':'')):'Este pedido foi cancelado.'}</p>`}
+  <div style="margin-top:14px">${(o.items||[]).map(i=>`<div class="hint">${i.qty}x ${esc(i.name)} — ${brl(i.price*i.qty)}</div>`).join('')}</div></div>
+  <div class="df">${num?`<a class="btn${open?'':' ghost'}" style="text-align:center" target="_blank" rel="noopener" href="https://wa.me/${num}?text=${msg}">Enviar comprovante pelo WhatsApp</a>`:''}<a class="hint" id="mo2" style="text-align:center;cursor:pointer">Ver meus pedidos</a></div>`;
+  $('#ovC').classList.add('show');$('#cx').onclick=closeAll;$('#mo2').onclick=openOrders;
+  const cp=$('#cp');if(cp)cp.onclick=async()=>{try{await navigator.clipboard.writeText(code)}catch(e){const t=$('#pcode');t.select();document.execCommand('copy')}toast('Código Pix copiado ✓')};
+}
+async function openOrders(){
+  closeAll();$('#ovC').classList.add('show');
+  const head='<div class="dh"><h2>Meus pedidos</h2><button class="x2" id="cx">×</button></div>';
+  $('#cart').innerHTML=head+'<div class="dl"><p class="hint" style="padding:30px 0">Carregando…</p></div>';$('#cx').onclick=closeAll;
+  const r=await db.from('orders').select('*').eq('user_id',user.id).order('created_at',{ascending:false});
+  const L=r.data||[];
+  $('#cart').innerHTML=head+`<div class="dl">${L.length?L.map(o=>`<div class="ci" data-o="${o.id}" style="cursor:pointer"><div class="n">Pedido #${o.number}<b>${brl(o.total)}</b><div class="hint">${new Date(o.created_at).toLocaleDateString('pt-BR')} · ${ST[o.status]}</div></div><span>›</span></div>`).join(''):'<p class="hint" style="padding:40px 0;text-align:center;font-size:15px">Você ainda não fez pedidos.</p>'}</div>`;
+  $('#cx').onclick=closeAll;
+  document.querySelectorAll('#cart [data-o]').forEach(e=>e.onclick=()=>drawOrder(L.find(o=>o.id===e.dataset.o)));
+}
+
+/* ---------- conta ---------- */
+const trad=m=>/invalid login/i.test(m)?'E-mail ou senha incorretos.':/already registered/i.test(m)?'Este e-mail já tem conta. Use “Entrar”.':/at least|weak/i.test(m)?'A senha precisa ter pelo menos 6 caracteres.':/valid email|invalid.*email|unable to validate/i.test(m)?'Confira o e-mail digitado.':/not confirmed/i.test(m)?'Confirme seu e-mail pelo link que enviamos.':/rate limit|too many/i.test(m)?'Muitas tentativas. Aguarde um pouco.':/disabled|not allowed/i.test(m)?'Cadastro indisponível no momento.':'Erro: '+m;
+function openAuth(mode){
+  if(!db)return;
+  const A=$('#auth'),x='<button class="x" id="ax">×</button>';
+  if(user&&mode!=='nova'){
+    A.innerHTML=`${x}<h2>Minha conta</h2><p class="hint" style="margin:0 0 18px">${esc(user.email)}</p>${isAdm?'<a class="btn" href="admin.html" style="display:block;text-align:center;margin-bottom:10px">Ir para o painel da loja</a>':''}<button class="btn ghost" id="mo" style="width:100%;margin-bottom:10px">Meus pedidos</button><button class="btn ghost" id="lo" style="width:100%">Sair da conta</button>`;
+    $('#lo').onclick=async()=>{await db.auth.signOut();closeAll()};$('#mo').onclick=openOrders;
+  }else{
+    const T={entrar:'Entrar',criar:'Criar conta',esqueci:'Recuperar senha',nova:'Nova senha'};
+    A.innerHTML=`${x}<h2>${T[mode]}</h2><p class="hint" style="margin:0">${mode==='criar'?'Crie sua conta para guardar sua sacola e voltar quando quiser.':mode==='entrar'?'Entre para guardar sua sacola.':mode==='esqueci'?'Enviaremos um link para o seu e-mail.':''}</p>
+    ${mode!=='nova'?'<label>E-mail</label><input id="ue" type="email" autocomplete="email">':''}
+    ${mode==='esqueci'?'':`<label>${mode==='nova'?'Nova senha':'Senha'}</label><input id="up" type="password" autocomplete="${mode==='entrar'?'current-password':'new-password'}" placeholder="mínimo 6 caracteres">`}
+    <p><button class="btn" id="ug" style="width:100%">${{entrar:'Entrar',criar:'Criar minha conta',esqueci:'Enviar link',nova:'Salvar senha'}[mode]}</button></p><div class="msg" id="um"></div>
+    <div class="alt">${mode==='entrar'?'<a data-m="criar">Criar conta</a> · <a data-m="esqueci">Esqueci a senha</a>':mode==='criar'?'Já tem conta? <a data-m="entrar">Entrar</a>':mode==='esqueci'?'<a data-m="entrar">Voltar</a>':''}</div>`;
+    const say=(t,bad)=>{const m=$('#um');m.textContent=t;m.className='msg'+(bad?' bad':'')};
+    A.querySelectorAll('[data-m]').forEach(a=>a.onclick=()=>openAuth(a.dataset.m));
+    A.querySelectorAll('input').forEach(i=>i.onkeydown=e=>{if(e.key==='Enter')$('#ug').click()});
+    $('#ug').onclick=async()=>{
+      const email=$('#ue')?.value.trim(),pw=$('#up')?.value;say('Aguarde…');let r;
+      if(mode==='entrar')r=await db.auth.signInWithPassword({email,password:pw});
+      else if(mode==='criar')r=await db.auth.signUp({email,password:pw});
+      else if(mode==='esqueci'){r=await db.auth.resetPasswordForEmail(email,{redirectTo:location.origin+location.pathname});if(!r.error)return say('Enviamos o link para o seu e-mail ✓')}
+      else{r=await db.auth.updateUser({password:pw});if(!r.error){say('Senha alterada ✓');setTimeout(closeAll,1200);return}}
+      if(r.error)return say(trad(r.error.message||''),1);
+      if(mode==='criar'&&!r.data.session)return say('Conta criada! Confirme pelo link enviado ao seu e-mail e depois entre.');
+      closeAll();toast('Bem-vinda! ✓');
+    };
+  }
+  $('#ax').onclick=closeAll;$('#ovU').classList.add('show');
+}
+db?.auth.onAuthStateChange((ev,ses)=>setTimeout(async()=>{
+  const nu=ses?.user||null;
+  if(ev==='PASSWORD_RECOVERY'){user=nu;openAuth('nova');return}
+  if((nu?.id||null)!==(user?.id||null)){user=nu;await loadCart();await checkAdmin();paintHdr();paintBadge();drawCart();quote();paintReviews()}
+},0));
+
+/* ---------- elogios ---------- */
+const stars=n=>'★'.repeat(n)+'☆'.repeat(5-n);
+const mine=()=>user?RV.find(r=>r.user_id===user.id):null;
+function reviewsSec(){
+  if(!db)return '';
+  const n=RV.length,avg=n?RV.reduce((a,r)=>a+r.stars,0)/n:0,list=rvAll?RV:RV.slice(0,6);
+  return `<section class="rvs" id="elogios"><div class="tag">Elogios</div><h2 class="rv">O que dizem nossas <em>clientes</em></h2>
+  ${n?`<div class="avg rv"><b>${avg.toFixed(1).replace('.',',')}</b><span class="stars">${stars(Math.round(avg))}</span><small>${n} ${n===1?'avaliação':'avaliações'}</small></div>`:'<p class="hint" style="text-align:center;font-size:15px;margin-top:16px">Seja a primeira a deixar um elogio ✦</p>'}
+  <div class="rgrid">${list.map((r,i)=>`<figure class="rcard rv" style="transition-delay:${(i%3)*90}ms"><div class="stars">${stars(r.stars)}</div><blockquote>${esc(r.body)}</blockquote><figcaption><b>${esc(r.author)}</b>${r.verified?'<span class="ver2">✓ Compra verificada</span>':''}</figcaption></figure>`).join('')}</div>
+  <div class="rbt">${n>6&&!rvAll?'<button class="btn ghost" id="rmore">Ver mais elogios</button>':''}<button class="btn" id="rnew">${mine()?'Editar meu elogio':'Deixar meu elogio'}</button></div></section>`;
+}
+function bindReviews(){
+  const a=$('#rnew'),b=$('#rmore');
+  if(a)a.onclick=openReview;if(b)b.onclick=()=>{rvAll=true;paintReviews()};
+}
+function paintReviews(){const e=$('#elogios');if(!e)return;e.outerHTML=reviewsSec();document.querySelectorAll('#elogios .rv').forEach(x=>x.classList.add('in'));bindReviews()}
+async function loadReviews(){const r=await db.from('reviews').select('*').order('created_at',{ascending:false}).limit(100);RV=r.data||[]}
+function openReview(){
+  if(!user){closeAll();openAuth('entrar');toast('Entre para deixar seu elogio');return}
+  const m=mine()||{},A=$('#auth');let st=m.stars||5;
+  A.innerHTML=`<button class="x" id="ax">×</button><h2>${m.id?'Seu elogio':'Deixe seu elogio'}</h2><p class="hint" style="margin:0">Conte como foi a sua experiência. Ele aparece no site da loja.</p>
+  <div class="starpick" id="sp">${[1,2,3,4,5].map(n=>`<button data-s="${n}" aria-label="${n} estrelas">★</button>`).join('')}</div>
+  <label>Seu nome (aparece no site)</label><input id="rn" maxlength="40" value="${esc(m.author||(info.name||'').split(' ')[0]||'')}">
+  <label>Seu elogio</label><textarea id="rt" rows="4" maxlength="400" placeholder="O que você mais gostou?">${esc(m.body||'')}</textarea>
+  <p><button class="btn" id="rs" style="width:100%">${m.id?'Salvar alterações':'Publicar elogio'}</button></p>
+  ${m.id?'<p style="text-align:center;margin:0"><a class="hint" id="rd" style="cursor:pointer;text-decoration:underline">Apagar meu elogio</a></p>':''}<div class="msg" id="um"></div>`;
+  const say=(t,bad)=>{const e=$('#um');e.textContent=t;e.className='msg'+(bad?' bad':'')};
+  const paint=()=>document.querySelectorAll('#sp button').forEach(b=>b.classList.toggle('on',Number(b.dataset.s)<=st));
+  document.querySelectorAll('#sp button').forEach(b=>b.onclick=()=>{st=Number(b.dataset.s);paint()});paint();
+  $('#ax').onclick=closeAll;
+  $('#rs').onclick=async()=>{
+    const author=$('#rn').value.trim(),body=$('#rt').value.trim();
+    if(author.length<2)return say('Informe seu nome.',1);
+    if(body.length<5)return say('Escreva um pouquinho mais (mínimo 5 letras).',1);
+    say('Enviando…');const row={author,stars:st,body};
+    const r=m.id?await db.from('reviews').update(row).eq('id',m.id):await db.from('reviews').insert(row);
+    if(r.error)return say(/duplicate|unique/i.test(r.error.message)?'Você já enviou um elogio. Atualize a página para editá-lo.':'Não foi possível enviar agora. Tente de novo.',1);
+    await loadReviews();paintReviews();closeAll();toast('Obrigada pelo carinho! ✦');
+  };
+  const d=$('#rd');if(d)d.onclick=async()=>{if(!confirm('Apagar o seu elogio?'))return;await db.from('reviews').delete().eq('id',m.id);await loadReviews();paintReviews();closeAll();toast('Elogio apagado')};
+  $('#ovU').classList.add('show');
+}
+
+/* ---------- vitrine ---------- */
+function card(p,i){
+  const off=p.old_price>p.price&&p.price>0?Math.round((1-p.price/p.old_price)*100):0,n=S.installments||5;
+  return `<div class="card rv" style="transition-delay:${(i%2)*90}ms" data-id="${p.id}">
+    ${p.sold_out?'<span class="badge">Esgotado</span>':off?`<span class="badge">${off}% OFF</span>`:''}
+    <div class="ph">${p.image_url?`<img loading="lazy" src="${esc(p.image_url)}" alt="${esc(p.name)}">`:'✦'}</div>
+    <div class="info"><h3>${esc(p.name)}</h3>
+    <div class="price">${off?`<s>${brl(p.old_price)}</s><i></i>`:''}<b>${brl(p.price)}</b></div>
+    ${n>1&&p.price>0?`<div class="parc">${n} x de <b>${brl(p.price/n)}</b> sem juros</div>`:''}
+    <button class="buy" data-b="${p.id}" ${p.sold_out?'disabled':''}>${p.sold_out?'Esgotado':'Comprar'}</button></div></div>`}
+function render(){
+  const only=[...new Set(P.map(p=>p.category).filter(Boolean))],cats=['Todas',...only];
+  const list=P.filter(p=>filter==='Todas'||p.category===filter);
+  const mq='✦ Elegância ✦ Brilho ✦ Delicadeza ✦ Estilo ✦ Feito para você '.repeat(8);
+  document.title=S.store_name+' Semijoias';
+  const tiles=only.length>1?`<section class="tiles">${only.map(c=>{const q=P.find(p=>p.category===c&&p.image_url);
+    return `<div class="tile rv" data-c="${esc(c)}">${CV[c]?`<video autoplay muted loop playsinline preload="metadata"${q?` poster="${esc(q.image_url)}"`:''} src="${esc(CV[c])}"></video>`:q?`<img loading="lazy" src="${esc(q.image_url)}" alt="">`:''}<span>${esc(c)}</span></div>`}).join('')}</section>`:'';
+  $('#app').innerHTML=`
+  <header id="hd"><div class="logo">${esc(S.store_name)}<small>SEMIJOIAS</small></div>
+  <div class="hr">${db?`${isAdm?'<a class="hb" id="adm" href="admin.html">Painel</a>':''}<button class="hb" id="acc">${user?'Minha conta':'Entrar'}</button>
+  <button class="hb" id="bag" aria-label="Sacola"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 8h14l-1 12H6L5 8z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/></svg><i id="bn" class="${count()?'on':''}">${count()||''}</i></button>`:''}</div></header>
+  <section class="hero"><i class="blob b1"></i><i class="blob b2"></i><i class="blob b3"></i>
+  <div class="tag">Nova coleção</div><h1>${esc(S.store_name)}<em>Semijoias</em></h1><p>${esc(S.tagline)}</p>
+  <div class="cta"><a class="btn" href="#colecao">Ver coleção</a></div></section>
+  <div class="mq"><div>${mq}${mq}</div></div>
+  ${tiles}
+  <section class="sec" id="colecao"><div class="tag">Catálogo</div><h2 class="rv">Peças que <em>brilham</em> com você</h2>
+  <div class="chips rv">${cats.map(c=>`<button class="chip ${c===filter?'on':''}" data-c="${esc(c)}">${esc(c)}</button>`).join('')}</div></section>
+  <div class="grid">${err?`<div class="empty">${err}</div>`:list.length?list.map(card).join(''):'<div class="empty">Novidades chegando em breve ✦</div>'}</div>
+  ${reviewsSec()}
+  <footer>${esc(S.store_name)} Semijoias · feitas para brilhar</footer>`;
+  const go=c=>{filter=c;render();$('#colecao').scrollIntoView({behavior:'smooth'})};
+  document.querySelectorAll('.chip,.tile').forEach(b=>b.onclick=()=>go(b.dataset.c));
+  document.querySelectorAll('.card').forEach(c=>c.onclick=()=>openProd(c.dataset.id));
+  document.querySelectorAll('.buy:not([disabled])').forEach(b=>b.onclick=e=>{e.stopPropagation();addCart(b.dataset.b)});
+  const a=$('#acc'),g=$('#bag');if(a)a.onclick=()=>openAuth(user?'conta':'entrar');if(g)g.onclick=openCart;
+  document.querySelectorAll('.tile video').forEach(v=>{v.muted=true;v.play().catch(()=>{})});
+  bindReviews();
+  const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}}),{threshold:.1});
+  document.querySelectorAll('.rv').forEach(el=>io.observe(el));onScroll();
+}
+function onScroll(){$('#hd')?.classList.toggle('sc',scrollY>60)}
+addEventListener('scroll',onScroll,{passive:true});
+
+function openProd(id){
+  const p=P.find(x=>x.id===id);if(!p)return;
+  const num=(S.whatsapp||'').replace(/\D/g,''),n=S.installments||5;
+  const msg=encodeURIComponent(`Olá! Tenho interesse na peça "${p.name}" (${brl(p.price)}) da ${S.store_name} Semijoias.`);
+  $('#modal').innerHTML=`<button class="x" id="cl2">×</button>
+  <div class="ph">${p.image_url?`<img src="${esc(p.image_url)}" alt="${esc(p.name)}">`:'✦'}</div>
+  <div class="body"><div class="cat">${esc(p.category)}</div><h2>${esc(p.name)}</h2>
+  <div style="font-family:'Cormorant Garamond',serif;font-size:30px;color:var(--gold)">${p.old_price>p.price?`<s style="font-size:20px;color:var(--muted)">${brl(p.old_price)}</s> `:''}${brl(p.price)}</div>
+  ${n>1&&p.price>0?`<div class="hint" style="font-size:14px">ou ${n} x de ${brl(p.price/n)} sem juros</div>`:''}
+  <p style="color:var(--muted);white-space:pre-wrap;margin:0">${esc(p.description)}</p>
+  ${p.sold_out?'<span class="hint">Peça esgotada no momento.</span>':`${db?'<button class="btn" id="addb">Adicionar à sacola</button>':''}${num?`<a class="btn ghost" style="text-align:center" target="_blank" rel="noopener" href="https://wa.me/${num}?text=${msg}">Pedir só esta peça pelo WhatsApp</a>`:''}`}</div>`;
+  $('#ovP').classList.add('show');$('#cl2').onclick=closeAll;
+  const b=$('#addb');if(b)b.onclick=()=>{addCart(p.id);closeAll()};
+}
+document.querySelectorAll('.ov').forEach(o=>o.onclick=e=>{if(e.target===o)o.classList.remove('show')});
+
+render();
+(async()=>{
+  try{await load()}catch(e){err='Não foi possível carregar o catálogo.'}
+  if(db){try{const {data}=await db.auth.getSession();user=data.session?.user||null;await loadCart();await checkAdmin()}catch(e){cart=gl()}}
+  render();drawCart();quote();
+})();
+</script>
+</body>
+</html>
