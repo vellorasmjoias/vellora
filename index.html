@@ -30,6 +30,7 @@ const ST={aguardando:'Aguardando pagamento',pago:'Pago',enviado:'Enviado',cancel
 const gl=()=>{try{return JSON.parse(localStorage.getItem(LS))||{}}catch(e){return{}}};
 const sl=()=>{try{localStorage.setItem(LS,JSON.stringify(cart))}catch(e){}};
 const count=()=>Object.values(cart).reduce((a,b)=>a+b,0);
+const HASH=location.hash;
 const configured=CFG.url&&!CFG.url.startsWith('COLE');
 const db=configured?supabase.createClient(CFG.url,CFG.key):null;
 
@@ -198,7 +199,7 @@ function openAuth(mode){
     $('#ug').onclick=async()=>{
       const email=$('#ue')?.value.trim(),pw=$('#up')?.value;say('Aguarde…');let r;
       if(mode==='entrar')r=await db.auth.signInWithPassword({email,password:pw});
-      else if(mode==='criar')r=await db.auth.signUp({email,password:pw});
+      else if(mode==='criar')r=await db.auth.signUp({email,password:pw,options:{emailRedirectTo:location.origin+location.pathname}});
       else if(mode==='esqueci'){r=await db.auth.resetPasswordForEmail(email,{redirectTo:location.origin+location.pathname});if(!r.error)return say('Enviamos o link para o seu e-mail ✓')}
       else{r=await db.auth.updateUser({password:pw});if(!r.error){say('Senha alterada ✓');setTimeout(closeAll,1200);return}}
       if(r.error)return say(trad(r.error.message||''),1);
@@ -321,6 +322,8 @@ render();
   try{await load()}catch(e){err='Não foi possível carregar o catálogo.'}
   if(db){try{const {data}=await db.auth.getSession();user=data.session?.user||null;await loadCart();await checkAdmin()}catch(e){cart=gl()}}
   render();drawCart();quote();
+  if(/type=signup/.test(HASH))toast('E-mail confirmado! Bem-vinda ✦');
+  else if(/otp_expired|access_denied/.test(HASH))toast('O link expirou. Use “Esqueci a senha” para receber outro.');
 })();
 </script>
 </body>
